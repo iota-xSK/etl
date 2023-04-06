@@ -118,7 +118,6 @@ fn apply(expr: &Expr, rules: &[RRule]) -> Expr {
         old = new.clone();
         for rule in rules {
             new = apply_impl(&new, rule);
-            println!("{new}");
         }
         if old == new {
             break;
@@ -198,7 +197,14 @@ impl Parser {
     fn parse(&mut self) -> Option<TreeNode> {
         let x = self.next();
         match x {
-            Some(Token::Lparen) => Some(TreeNode::Expr(self.parse_expr()?)),
+            Some(Token::Lparen) => {
+                let expr = Some(TreeNode::Expr(self.parse_expr()?));
+                match self.next() {
+                    None => (),
+                    Some(_) => return None,
+                }
+                expr
+            }
             Some(Token::RuleKW) => Some(TreeNode::Rule {
                 name: match self.next() {
                     Some(Token::Id(name)) => name.to_string(),
@@ -228,29 +234,20 @@ impl Parser {
         Some(RRule { patt, re })
     }
     fn parse_expr(&mut self) -> Option<Expr> {
-        let first = self.next();
-        let first = match first {
-            None | Some(Token::Arrow) | Some(Token::RuleKW) => return None,
-            Some(Token::Lparen) => self.parse_expr()?,
-            Some(Token::Rparen) => return None,
-            Some(Token::OpId(name)) => Op(name.to_string()),
-            Some(Token::Id(name)) => Var(name.to_string()),
-        };
-
-        let second = match self.next() {
-            None => return None,
-            Some(Token::Id(right_name)) => Var(right_name.to_string()),
-            Some(Token::OpId(right_name)) => Op(right_name.to_string()),
-            Some(Token::Rparen) => return Some(first),
-            Some(Token::Arrow) => return None,
-            Some(Token::RuleKW) => return None,
-            Some(Token::Lparen) => self.parse_expr()?,
-        };
-        match self.next() {
-            Some(Token::Rparen) => (),
-            _ => return None,
+        let mut exprs = Vec::new();
+        while let Some(thing) = self.next() {
+            match thing {
+                Token::Id(name) => exprs.push(Var(name.clone())),
+                Token::Lparen => exprs.push(self.parse_expr()?),
+                Token::Rparen => break,
+                Token::OpId(name) => exprs.push(Op(name.clone())),
+                _ => return None,
+            }
         }
-        Some(App(Box::new(first), Box::new(second)))
+        exprs
+            .iter()
+            .map(|a| a.clone())
+            .reduce(|acc, a| App(Box::new(acc.clone()), Box::new(a.clone())))
     }
 }
 
