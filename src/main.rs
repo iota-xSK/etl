@@ -1,21 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::{Debug, Display},
 };
 use Expr::*;
-
-// macro_rules! e {
-//     ($left:expr, $right:expr) => {
-//         App(Box::new($left), Box::new($right))
-//     };
-//     ($i:ident) => {
-//         Var(stringify!($i).to_string())
-//     };
-//
-//     (op $i:ident) => {
-//         Op(stringify!($i).to_string())
-//     };
-// }
 
 fn main() {
     let mut repl = Repl::new();
@@ -96,20 +83,6 @@ fn replace(statement: &Expr, binds: &Bindings) -> Option<Expr> {
     }
 }
 
-// fn deep_apply(expr: &Expr, rule: &RRule) -> Expr {
-//     match pattern_match(expr, &rule.patt) {
-//         Some(binds) => deep_apply(&replace(&rule.re, &binds).unwrap(), rule),
-//         None => match expr {
-//             App(head, body) => App(
-//                 Box::new(deep_apply(&head, rule)),
-//                 Box::new(deep_apply(&body, rule)),
-//             ),
-//             Var(_) => expr.clone(),
-//             Op(_) => expr.clone(),
-//         },
-//     }
-// }
-
 fn apply(expr: &Expr, rules: &[RRule]) -> Expr {
     let mut new = expr.clone();
     let mut old;
@@ -117,11 +90,12 @@ fn apply(expr: &Expr, rules: &[RRule]) -> Expr {
     loop {
         old = new.clone();
         for rule in rules {
-            new = apply_impl(&new, rule);
+            new = apply_impl_iterative(&new, rule);
         }
         if old == new {
             break;
         }
+        println!("{old}");
     }
 
     new
@@ -139,6 +113,56 @@ fn apply_impl(expr: &Expr, rule: &RRule) -> Expr {
         Some(binds) => apply_impl(&replace(&rule.re, &binds).unwrap(), rule),
     }
 }
+fn apply_impl_iterative(expr: &Expr, rule: &RRule) -> Expr {
+    use std::collections::VecDeque;
+
+    // Stack element: (current_expr, processed_flag)
+    let mut stack: Vec<(Expr, bool)> = Vec::new();
+    let mut results: Vec<Expr> = Vec::new();
+
+    stack.push((expr.clone(), false));
+
+    while let Some((current_expr, visited)) = stack.pop() {
+        if visited {
+            // Rebuild if App, otherwise keep as-is
+            match current_expr {
+                App(_, _) => {
+                    let right_expr = results.pop().unwrap();
+                    let left_expr = results.pop().unwrap();
+                    results.push(App(Box::new(left_expr), Box::new(right_expr)));
+                }
+                _ => {
+                    results.push(current_expr);
+                }
+            }
+        } else {
+            // Check for rule match
+            if let Some(binds) = pattern_match(&current_expr, &rule.patt) {
+                if let Some(replaced) = replace(&rule.re, &binds) {
+                    // Reapply the rule on the replaced expression
+                    stack.push((replaced, false));
+                } else {
+                    results.push(current_expr); // fallback if replacement fails
+                }
+            } else {
+                match &current_expr {
+                    App(left, right) => {
+                        // Post-order traversal: push current node (marked), then children
+                        stack.push((current_expr.clone(), true));
+                        stack.push((*right.clone(), false));
+                        stack.push((*left.clone(), false));
+                    }
+                    _ => {
+                        // Leaf node, no match: push directly
+                        results.push(current_expr.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    results.pop().unwrap()
+}
 
 fn lexe(text: &str) -> Vec<Token> {
     let text = text.replace("(", " ( ");
@@ -150,8 +174,7 @@ fn lexe(text: &str) -> Vec<Token> {
         tokens.push(match word {
             "(" => Token::Lparen,
             ")" => Token::Rparen,
-            "rule" => Token::RuleKW,
-            "->" => Token::Arrow,
+            "<>" => Token::RuleKW,
             _ => {
                 if word.starts_with("!") {
                     Token::OpId(word.strip_prefix("!").unwrap().to_string())
@@ -169,9 +192,8 @@ enum Token {
     Id(String),
     Lparen,
     Rparen,
-    OpId(String),
     RuleKW,
-    Arrow,
+    OpId(String),
 }
 
 struct Parser {
@@ -181,8 +203,26 @@ struct Parser {
 
 #[derive(Debug, Clone)]
 enum TreeNode {
-    Rule { name: String, rule: RRule },
+    Rule { rule: RRule },
     Expr(Expr),
+}
+
+fn check_rule(rule: &RRule) -> bool {
+    let mut re_sym = HashSet::new();
+    let mut patt_sym = HashSet::new();
+
+    fn traverse_expr(expr: &Expr, re_sym: &mut HashSet<String>) {
+        match expr {
+            App(expr, expr1) => {traverse_expr(&expr, re_sym); traverse_expr(&expr1, re_sym);},
+            Var(v) => {re_sym.insert(v.to_string());},
+            Op(_) => return,
+        }
+    }
+
+    traverse_expr(&rule.patt, &mut patt_sym);
+    traverse_expr(&rule.re, &mut re_sym);
+
+    return re_sym.is_subset(&patt_sym);
 }
 
 impl Parser {
@@ -206,10 +246,6 @@ impl Parser {
                 expr
             }
             Some(Token::RuleKW) => Some(TreeNode::Rule {
-                name: match self.next() {
-                    Some(Token::Id(name)) => name.to_string(),
-                    _ => return None,
-                },
                 rule: self.parse_rule()?,
             }),
             _ => None,
@@ -222,16 +258,17 @@ impl Parser {
         }
         let patt = self.parse_expr()?;
         match self.next() {
-            Some(Token::Arrow) => (),
-            _ => return None,
-        };
-        match self.next() {
             Some(Token::Lparen) => (),
             _ => return None,
         }
         let re = self.parse_expr()?;
-
-        Some(RRule { patt, re })
+        let rule = RRule { patt, re };
+        if check_rule(&rule) {
+            Some(rule)
+        } else {
+            println!("new token on right side. Unacceptable!");
+            None
+        }
     }
     fn parse_expr(&mut self) -> Option<Expr> {
         let mut exprs = Vec::new();
@@ -252,13 +289,13 @@ impl Parser {
 }
 
 struct Repl {
-    rules: HashMap<String, RRule>,
+    rules: Vec<RRule>,
 }
 
 impl Repl {
     fn new() -> Self {
         Self {
-            rules: HashMap::new(),
+            rules: Vec::new(),
         }
     }
     fn run(&mut self) -> Result<(), std::io::Error> {
@@ -282,14 +319,13 @@ impl Repl {
                                     &self
                                         .rules
                                         .iter()
-                                        .map(|a| { (*a.1).clone() })
+                                        .map(|a| { (*a).clone() })
                                         .collect::<Vec<RRule>>(),
                                 )
                             )
                         }
-                        Some(TreeNode::Rule { name, rule }) => {
-                            println!("Added rule {} : {:?}", name, rule);
-                            self.rules.insert(name, rule);
+                        Some(TreeNode::Rule { rule }) => {
+                            self.rules.push(rule);
                         }
                         None => println!("Syntax error!"),
                     }
@@ -305,7 +341,7 @@ impl Display for TreeNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TreeNode::Expr(expr) => write!(f, "{expr}"),
-            TreeNode::Rule { name, rule } => write!(f, "rule {name}: {rule:?}"),
+            TreeNode::Rule { rule } => write!(f, "{rule:?}"),
         }
     }
 }
