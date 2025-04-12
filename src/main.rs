@@ -255,8 +255,6 @@ struct Repl {
     rules: HashMap<String, RRule>,
 }
 
-use linefeed::{Interface, ReadResult};
-
 impl Repl {
     fn new() -> Self {
         Self {
@@ -264,11 +262,10 @@ impl Repl {
         }
     }
     fn run(&mut self) -> Result<(), std::io::Error> {
-        let reader = Interface::new("application")?;
+            let stdin = std::io::stdin();
+            for input in stdin.lines() {
+                if let Ok(input) = input {
 
-        reader.set_prompt("etl> ")?;
-
-        while let ReadResult::Input(input) = reader.read_line()? {
             match input.as_str() {
                 "bye" => break,
                 _ => {
@@ -297,8 +294,7 @@ impl Repl {
                         None => println!("Syntax error!"),
                     }
                 }
-            }
-        }
+            }}}
 
         println!("Goodbye.");
         Ok(())
